@@ -4,15 +4,28 @@ FastAPI backend — API endpoints for plant disease classification.
 
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+import jwt
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from predictor import PlantDiseasePredictor
+
+# ──────────────────────────────────────────────
+# Auth config (single hardcoded admin — demo only)
+# ──────────────────────────────────────────────
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production-please")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 12
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 # ──────────────────────────────────────────────
 # App setup
@@ -48,8 +61,57 @@ MAX_HISTORY = 50
 
 
 # ──────────────────────────────────────────────
+# Auth helpers
+# ──────────────────────────────────────────────
+
+def create_access_token(username: str) -> str:
+    payload = {
+        "sub": username,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
+    credentials_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Token không hợp lệ hoặc đã hết hạn",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username = payload.get("sub")
+        if username != ADMIN_USERNAME:
+            raise credentials_exc
+        return username
+    except jwt.PyJWTError:
+        raise credentials_exc
+
+
+# ──────────────────────────────────────────────
 # API Routes
 # ──────────────────────────────────────────────
+
+@app.post("/api/auth/login")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Authenticate admin and return JWT access token."""
+    if form_data.username != ADMIN_USERNAME or form_data.password != ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sai tài khoản hoặc mật khẩu",
+        )
+    return {
+        "access_token": create_access_token(form_data.username),
+        "token_type": "bearer",
+        "username": form_data.username,
+    }
+
+
+@app.get("/api/auth/me")
+async def me(username: str = Depends(get_current_user)):
+    """Return current authenticated user (used by FE to verify token)."""
+    return {"username": username}
+
 
 @app.get("/api/health")
 async def health_check():
@@ -119,8 +181,8 @@ async def predict(file: UploadFile = File(...)):
 
 
 @app.get("/api/history")
-async def get_history():
-    """Return prediction history."""
+async def get_history(_: str = Depends(get_current_user)):
+    """Return prediction history (admin only)."""
     # Compute statistics
     total = len(prediction_history)
     disease_counts: dict[str, int] = {}

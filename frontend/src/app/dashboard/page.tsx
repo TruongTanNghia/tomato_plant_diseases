@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { authHeader, clearToken, getToken } from "@/lib/auth";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -32,12 +34,25 @@ interface HistoryData {
 }
 
 export default function DashboardPage() {
+    const router = useRouter();
     const [data, setData] = useState<HistoryData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [authChecked, setAuthChecked] = useState(false);
+
+    const handleLogout = useCallback(() => {
+        clearToken();
+        router.replace("/login");
+    }, [router]);
 
     const fetchData = useCallback(async () => {
         try {
-            const res = await fetch(`${API_URL}/api/history`);
+            const res = await fetch(`${API_URL}/api/history`, {
+                headers: { ...authHeader() },
+            });
+            if (res.status === 401) {
+                handleLogout();
+                return;
+            }
             if (res.ok) {
                 setData(await res.json());
             }
@@ -46,13 +61,25 @@ export default function DashboardPage() {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [handleLogout]);
+
+    // Guard: redirect to /login if no token
+    useEffect(() => {
+        if (!getToken()) {
+            router.replace("/login?next=/dashboard");
+            return;
+        }
+        setAuthChecked(true);
+    }, [router]);
 
     useEffect(() => {
+        if (!authChecked) return;
         fetchData();
         const interval = setInterval(fetchData, 5000); // auto-refresh 5s
         return () => clearInterval(interval);
-    }, [fetchData]);
+    }, [authChecked, fetchData]);
+
+    if (!authChecked) return null;
 
     const diseaseCounts = data?.disease_counts || {};
     const maxCount = Math.max(...Object.values(diseaseCounts), 1);
@@ -90,6 +117,14 @@ export default function DashboardPage() {
                         <Link href="/dashboard" className="nav-link active">
                             Dashboard
                         </Link>
+                        <button
+                            type="button"
+                            onClick={handleLogout}
+                            className="nav-link logout-btn"
+                            title="Đăng xuất"
+                        >
+                            🚪 Đăng xuất
+                        </button>
                     </nav>
                 </div>
             </header>
